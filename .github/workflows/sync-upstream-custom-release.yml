@@ -76,8 +76,14 @@ jobs:
             "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest")"
 
           upstream_tag="$(jq -r '.tag_name // empty' <<<"$release_json")"
+          upstream_name="$(jq -r '.name // .tag_name // empty' <<<"$release_json")"
+          upstream_url="$(jq -r '.html_url // empty' <<<"$release_json")"
           portable_url="$(jq -r '[.assets[] | select(.name | test("\\.7z$"; "i"))] | sort_by(.size) | reverse | .[0].browser_download_url // empty' <<<"$release_json")"
           portable_name="$(jq -r '[.assets[] | select(.name | test("\\.7z$"; "i"))] | sort_by(.size) | reverse | .[0].name // empty' <<<"$release_json")"
+
+          # Preserve the upstream release body exactly as Markdown. This file is
+          # reused later when creating the custom release notes.
+          jq -r '.body // ""' <<<"$release_json" > "$RUNNER_TEMP/upstream-release-notes.md"
 
           if [[ -z "$upstream_tag" || -z "$portable_url" ]]; then
             echo "::error::Could not find the latest upstream release or its portable .7z asset."
@@ -85,6 +91,8 @@ jobs:
           fi
 
           echo "tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
+          echo "name=${upstream_name}" >> "$GITHUB_OUTPUT"
+          echo "url=${upstream_url}" >> "$GITHUB_OUTPUT"
           echo "portable_url=${portable_url}" >> "$GITHUB_OUTPUT"
           echo "portable_name=${portable_name}" >> "$GITHUB_OUTPUT"
 
@@ -212,16 +220,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          UPSTREAM_NAME: ${{ steps.upstream.outputs.name }}
+          UPSTREAM_URL: ${{ steps.upstream.outputs.url }}
           CUSTOM_TAG: ${{ steps.plan.outputs.custom_tag }}
           OUTPUT_NAME: ${{ steps.package.outputs.output_name }}
           CHECKSUM_NAME: ${{ steps.package.outputs.checksum_name }}
         run: |
           set -euo pipefail
 
+          # Start with the original allecsc/Stremio-Kai release notes verbatim.
+          cp "$RUNNER_TEMP/upstream-release-notes.md" "$RUNNER_TEMP/release-notes.md"
+
+          # Keep our fork-specific information separate and below the original
+          # upstream release text so the upstream changelog remains intact.
           {
-            echo "Automatically built custom Stremio Kai package."
             echo
-            echo "- Upstream: \`${UPSTREAM_REPO}@${UPSTREAM_TAG}\`"
+            echo
+            echo "---"
+            echo
+            echo "### Custom build information"
+            echo
+            echo "This package is based on the official upstream release and adds the custom changes from this fork."
+            echo
+            echo "- Upstream release: [\`${UPSTREAM_TAG}\`](${UPSTREAM_URL})"
             echo "- Custom branch: \`${CUSTOM_BRANCH}\`"
             echo "- Custom commit: \`${CUSTOM_SHA}\`"
             echo "- Build method: official upstream portable archive + custom \`portable_config\` changes"
@@ -232,14 +253,19 @@ jobs:
             else
               echo "- None"
             fi
-          } > "$RUNNER_TEMP/release-notes.md"
+          } >> "$RUNNER_TEMP/release-notes.md"
+
+          release_title="${UPSTREAM_NAME} — Custom"
+          if [[ -z "${UPSTREAM_NAME}" ]]; then
+            release_title="Stremio Kai Custom — ${UPSTREAM_TAG}"
+          fi
 
           gh release create "$CUSTOM_TAG" \
             "$OUTPUT_NAME" \
             "$CHECKSUM_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$CUSTOM_SHA" \
-            --title "Stremio Kai Custom — ${UPSTREAM_TAG}" \
+            --title "$release_title" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
 
       - name: Summary
