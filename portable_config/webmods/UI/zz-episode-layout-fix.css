@@ -1,55 +1,145 @@
 /**
- * Episode sidebar layout compatibility fix
+ * Episode sidebar layout compatibility fix (v2)
  *
- * Newer Stremio UI builds can leave the episode row's info pane at its
- * intrinsic width instead of letting it consume the remaining row width.
- * That makes titles/descriptions wrap one character per line and overlap.
+ * Some Stremio UI builds leave the episode metadata pane at its intrinsic
+ * width while the thumbnail side consumes the rest of the row. The result is
+ * a large empty middle gap and titles/descriptions wrapping into a very thin
+ * strip on the right.
  *
- * Keep the thumbnail fixed, restore the episode row as a flex row, and let
- * the info pane reliably occupy the remaining horizontal space.
+ * Use an explicit two-column grid for each episode row so the thumbnail owns
+ * a bounded first column and the metadata pane always owns the remaining
+ * width. Also neutralize stale flex widths/margins from the native UI.
  */
 
 .video-container-ezBpK {
-    display: flex !important;
-    align-items: stretch !important;
+    display: grid !important;
+    grid-template-columns: clamp(112px, 28%, 144px) minmax(0, 1fr) !important;
+    grid-auto-flow: row !important;
+    column-gap: 14px !important;
+    align-items: start !important;
+    justify-content: stretch !important;
     width: 100% !important;
     min-width: 0 !important;
+    max-width: 100% !important;
     box-sizing: border-box !important;
+}
+
+/* Prevent direct children from preserving a stale intrinsic/flex width. */
+.video-container-ezBpK > * {
+    min-width: 0 !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+/* Thumbnail can be either a direct child or wrapped by a clickable element. */
+.video-container-ezBpK > .thumbnail-J81W3,
+.video-container-ezBpK > :has(.thumbnail-J81W3) {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 144px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    justify-self: stretch !important;
+    align-self: start !important;
 }
 
 .video-container-ezBpK .thumbnail-J81W3 {
-    flex: 0 0 auto !important;
+    display: block !important;
+    width: 100% !important;
     min-width: 0 !important;
+    max-width: 144px !important;
+    height: auto !important;
+    aspect-ratio: 16 / 10 !important;
+    margin: 0 !important;
+    object-fit: cover !important;
+    box-sizing: border-box !important;
+}
+
+/*
+ * Force the metadata side into column 2. The :has() fallbacks cover builds
+ * where Stremio wraps the info container in an extra clickable/transition
+ * element. Reset margins/offsets so it cannot be pushed to the far right.
+ */
+.video-container-ezBpK > .info-container-xyynk,
+.video-container-ezBpK > :has(> .info-container-xyynk),
+.video-container-ezBpK > :has(.info-container-xyynk) {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    justify-self: stretch !important;
+    align-self: stretch !important;
 }
 
 .video-container-ezBpK .info-container-xyynk {
-    flex: 1 1 0% !important;
-    width: 0 !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) max-content !important;
+    grid-template-rows: min-content auto !important;
+    gap: 4px 12px !important;
+    width: 100% !important;
     min-width: 0 !important;
     max-width: none !important;
-    box-sizing: border-box !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    position: relative !important;
+    inset: auto !important;
+    transform: none !important;
     overflow: hidden !important;
+    box-sizing: border-box !important;
 }
 
-/* Prevent title/date content from forcing the grid into a near-zero text column. */
+/* Episode title: use the full left header cell and wrap by words, not letters. */
 .video-container-ezBpK .info-container-xyynk .title-container-NcfV9 {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+    width: 100% !important;
     min-width: 0 !important;
-    width: auto !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    line-height: 1.25 !important;
+    white-space: normal !important;
     word-break: normal !important;
-    overflow-wrap: normal !important;
+    overflow-wrap: break-word !important;
+    text-wrap: wrap !important;
 }
 
+/* Date / upcoming badge: reserve only its natural width, never most of the row. */
 .video-container-ezBpK .info-container-xyynk .flex-row-container-CAyQu {
-    min-width: max-content !important;
-    max-width: 45% !important;
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: 9rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    justify-self: end !important;
+    align-self: start !important;
+    white-space: nowrap !important;
     overflow: hidden !important;
     text-overflow: ellipsis !important;
 }
 
+/* Description always spans the complete metadata width below the header. */
 .video-container-ezBpK .episode-description-spe {
+    grid-column: 1 / -1 !important;
+    grid-row: 2 !important;
+    width: 100% !important;
     min-width: 0 !important;
     max-width: 100% !important;
-    box-sizing: border-box !important;
+    height: auto !important;
+    max-height: 125px !important;
+    margin: 0 !important;
+    padding: 4px 4px 8px 0 !important;
+    white-space: normal !important;
     word-break: normal !important;
     overflow-wrap: break-word !important;
+    text-wrap: pretty !important;
+    box-sizing: border-box !important;
 }
