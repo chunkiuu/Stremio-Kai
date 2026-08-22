@@ -1,12 +1,13 @@
 /**
  * @name English Original Title Companion
- * @description Shows the English/original title beside localized Chinese titles, but only for media whose TMDB original_language is English.
+ * @description Shows the English/original title beneath localized Chinese titles for media whose TMDB original_language is English.
  *
- * Behaviour:
- * - Chinese/localized title remains primary.
- * - If TMDB says original_language === "en", show the English title as a secondary line.
- * - Non-English originals (Japanese anime, Korean dramas, etc.) do not get an English subtitle.
- * - The full Chinese + English pair is also written to the card tooltip.
+ * Stability notes:
+ * - Uses a visually invisible sentinel so the Chinese catalog localizer cannot mistake
+ *   the secondary English line for the primary title and rewrite it.
+ * - Avoids no-op textContent writes, preventing MutationObserver feedback loops/flicker.
+ * - Supports regular catalog cards and Continue Watching cards localized by the
+ *   companion Continue Watching localizer.
  */
 (function () {
   "use strict";
@@ -17,11 +18,14 @@
   const FETCH_TIMEOUT_MS = 7000;
   const SCAN_DELAY_MS = 260;
   const CONCURRENCY = 4;
+  const ENGLISH_SENTINEL = "\u2060";
 
   const CATALOG_CONTAINERS =
     ".meta-items-container-n8vNz, .meta-items-container-qcuUA, .meta-items-container-IKrND";
   const POSTER_SELECTOR =
     "img.poster-image-NiV7O, .poster-container-qkw48 img, img[src*='poster']";
+  const SUBTITLE_SELECTOR =
+    ".kai-english-original-title, .kai-hero-english-original-title";
 
   const cache = new Map();
   let observer = null;
@@ -95,9 +99,8 @@
 
     const type = match[1].toLowerCase();
     const rawId = match[2];
-    if (/^tt\d+$/i.test(rawId)) {
-      return { type, imdbId: rawId, tmdbId: null };
-    }
+    const imdbMatch = rawId.match(/tt\d+/i);
+    if (imdbMatch) return { type, imdbId: imdbMatch[0], tmdbId: null };
     if (/^tmdb:\d+$/i.test(rawId)) {
       return {
         type,
@@ -112,25 +115,23 @@
     const href =
       item.getAttribute?.("href") ||
       item.closest?.("a[href]")?.getAttribute("href") ||
+      item.querySelector?.("a[href]")?.getAttribute("href") ||
       "";
     let info = parseDetailHref(href);
 
-    if (!info) {
-      const id = item.id || item.closest?.("[id]")?.id || "";
-      if (/^tt\d+$/i.test(id)) {
-        info = { type: null, imdbId: id, tmdbId: null };
-      } else if (/^tmdb:\d+$/i.test(id)) {
-        info = {
-          type: null,
-          imdbId: null,
-          tmdbId: Number(id.replace(/^tmdb:/i, "")),
-        };
-      }
-    }
-
     const poster = item.querySelector?.(POSTER_SELECTOR);
-    if (!info && poster?.src) {
-      const imdb = poster.src.match(/tt\d{7,}/i)?.[0] || null;
+    if (!info) {
+      const haystack = [
+        item.id,
+        item.getAttribute?.("data-id"),
+        item.getAttribute?.("data-video-id"),
+        item.getAttribute?.("data-meta-id"),
+        poster?.src,
+        href,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const imdb = haystack.match(/tt\d{7,}/i)?.[0] || null;
       if (imdb) info = { type: null, imdbId: imdb, tmdbId: null };
     }
 
@@ -138,6 +139,7 @@
     if (!info.type) {
       if (/\/series\//i.test(href)) info.type = "series";
       else if (/\/movie\//i.test(href)) info.type = "movie";
+      else if (item.dataset?.kaiContentType) info.type = item.dataset.kaiContentType;
     }
     return info;
   }
@@ -202,6 +204,7 @@
     let node;
     while ((node = walker.nextNode())) {
       if (node.parentElement?.closest?.(".poster-container-qkw48")) continue;
+      if (node.parentElement?.closest?.(SUBTITLE_SELECTOR)) continue;
       if ((node.nodeValue || "").trim() === localizedTitle.trim()) return node;
     }
     return null;
@@ -210,6 +213,14 @@
   function removeCardSubtitle(item) {
     item.querySelectorAll?.(".kai-english-original-title").forEach((el) => el.remove());
     delete item.dataset.kaiEnglishOriginalTitle;
+  }
+
+  function setStableEnglishText(element, englishTitle) {
+    if (!element || !englishTitle) return;
+    if (element.dataset.kaiEnglishTitle === englishTitle) return;
+    element.textContent = `${englishTitle}${ENGLISH_SENTINEL}`;
+    element.dataset.kaiEnglishTitle = englishTitle;
+    element.setAttribute("aria-label", englishTitle);
   }
 
   function applyCardSubtitle(item, localizedTitle, englishTitle) {
@@ -226,16 +237,22 @@
     if (!subtitle) {
       subtitle = document.createElement("span");
       subtitle.className = "kai-english-original-title";
+      subtitle.dataset.kaiCompanionOwned = "true";
       titleNode.parentElement.appendChild(subtitle);
     }
 
-    subtitle.textContent = englishTitle;
+    setStableEnglishText(subtitle, englishTitle);
     subtitle.title = englishTitle;
     item.dataset.kaiEnglishOriginalTitle = englishTitle;
 
     const bilingualTooltip = `${localizedTitle} / ${englishTitle}`;
-    if (item.getAttribute?.("title") != null) item.setAttribute("title", bilingualTooltip);
-    if (item.getAttribute?.("aria-label") != null) {
+    if (item.getAttribute?.("title") != null && item.getAttribute("title") !== bilingualTooltip) {
+      item.setAttribute("title", bilingualTooltip);
+    }
+    if (
+      item.getAttribute?.("aria-label") != null &&
+      item.getAttribute("aria-label") !== bilingualTooltip
+    ) {
       item.setAttribute("aria-label", bilingualTooltip);
     }
   }
@@ -243,9 +260,6 @@
   async function processCatalogItem(item) {
     if (!item?.isConnected) return;
 
-    // The Chinese catalog localizer sets this only after a visible title has
-    // actually been replaced, so this companion never forces bilingual text
-    // onto cards that are still showing their normal English title.
     const localizedTitle = item.dataset?.kaiLocalizedTitle || "";
     if (!localizedTitle) {
       removeCardSubtitle(item);
@@ -268,6 +282,7 @@
 
   function getCatalogItems() {
     const results = new Set();
+
     document.querySelectorAll(CATALOG_CONTAINERS).forEach((container) => {
       container.querySelectorAll("a, div[tabindex]").forEach((item) => {
         if (
@@ -279,6 +294,11 @@
         }
       });
     });
+
+    document.querySelectorAll("div[tabindex][data-kai-localized-title]").forEach((item) => {
+      results.add(item);
+    });
+
     return Array.from(results);
   }
 
@@ -340,10 +360,11 @@
     if (!subtitle) {
       subtitle = document.createElement("div");
       subtitle.className = "kai-hero-english-original-title";
+      subtitle.dataset.kaiCompanionOwned = "true";
       host.insertAdjacentElement("afterend", subtitle);
     }
 
-    subtitle.textContent = english.englishTitle;
+    setStableEnglishText(subtitle, english.englishTitle);
     subtitle.title = english.englishTitle;
   }
 
@@ -375,15 +396,18 @@
     if (!document.body || observer) return;
     observer = new MutationObserver((mutations) => {
       if (!isChineseMode()) return;
-      if (
-        mutations.some(
-          (mutation) =>
-            mutation.type === "childList" &&
-            (mutation.addedNodes.length || mutation.removedNodes.length),
-        )
-      ) {
-        scheduleScan();
-      }
+
+      const relevant = mutations.some((mutation) => {
+        if (mutation.type !== "childList") return false;
+        const target =
+          mutation.target?.nodeType === Node.ELEMENT_NODE
+            ? mutation.target
+            : mutation.target?.parentElement;
+        if (target?.closest?.(SUBTITLE_SELECTOR)) return false;
+        return mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0;
+      });
+
+      if (relevant) scheduleScan();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
@@ -400,13 +424,10 @@
     window.addEventListener("metadata-modules-ready", () => scheduleScan(150));
     document.body.addEventListener("click", () => scheduleScan(320), true);
 
-    // Hero slides can change without a route change. Requests are cached after
-    // the first lookup, so this is intentionally lightweight.
     setInterval(() => {
       if (isChineseMode()) processHero().catch(() => {});
     }, 1300);
 
-    // Catalog localizer may finish a fraction later than this script.
     scheduleScan(800);
   }
 
