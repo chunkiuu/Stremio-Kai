@@ -1,17 +1,12 @@
 /**
- * Episode sidebar layout compatibility fix (v3)
+ * Episode sidebar layout compatibility fix (v4)
  *
- * Some Stremio UI builds leave the episode metadata pane at its intrinsic
- * width while the thumbnail side consumes the rest of the row. The result is
- * a large empty middle gap and titles/descriptions wrapping into a very thin
- * strip on the right.
+ * Fixes the episode list collapsing its metadata into a thin strip, and makes
+ * the sidebar use more of the available horizontal space on large displays.
  *
- * Use an explicit two-column grid for each episode row so the thumbnail owns
- * a bounded first column and the metadata pane always owns the remaining
- * width. Also neutralize stale flex widths/margins from the native UI.
- *
- * v3: slightly larger episode thumbnails while keeping enough room for title,
- * date and description text in the sidebar.
+ * Base layout: compact and safe for normal/windowed sizes.
+ * Large-display layout: wider episode panel, larger thumbnails, and more
+ * readable title/description text without sacrificing metadata width.
  */
 
 .video-container-ezBpK {
@@ -48,6 +43,7 @@
     align-self: start !important;
 }
 
+.video-container-ezBpK .thumbnail-container-Zm8Cl,
 .video-container-ezBpK .thumbnail-J81W3 {
     display: block !important;
     width: 100% !important;
@@ -145,4 +141,48 @@
     overflow-wrap: break-word !important;
     text-wrap: pretty !important;
     box-sizing: border-box !important;
+}
+
+/*
+ * Large-display refinement.
+ * Keep windowed layouts unchanged, but on 2K-class/full-screen viewports use
+ * part of the otherwise empty centre-right area for the episode sidebar.
+ */
+@media (min-width: 1600px) {
+    .metadetails-container-K_Dqa .metadetails-content-Uz5EV .videos-list-nE0LJ {
+        flex: 0 0 clamp(560px, 31vw, 760px) !important;
+        width: clamp(560px, 31vw, 760px) !important;
+        min-width: clamp(560px, 31vw, 760px) !important;
+        max-width: clamp(560px, 31vw, 760px) !important;
+    }
+
+    .video-container-ezBpK {
+        grid-template-columns: clamp(200px, 36%, 260px) minmax(0, 1fr) !important;
+        column-gap: 18px !important;
+    }
+
+    .video-container-ezBpK > .thumbnail-J81W3,
+    .video-container-ezBpK > :has(.thumbnail-J81W3),
+    .video-container-ezBpK .thumbnail-container-Zm8Cl,
+    .video-container-ezBpK .thumbnail-J81W3 {
+        width: 100% !important;
+        max-width: 260px !important;
+    }
+
+    .video-container-ezBpK .info-container-xyynk .title-container-NcfV9 {
+        font-size: 1rem !important;
+        line-height: 1.3 !important;
+    }
+
+    .video-container-ezBpK .episode-description-spe {
+        font-size: 0.92rem !important;
+        line-height: 1.4 !important;
+        max-height: 150px !important;
+        opacity: 0.84 !important;
+    }
+
+    .video-container-ezBpK .info-container-xyynk .flex-row-container-CAyQu {
+        max-width: 10rem !important;
+        font-size: 0.86rem !important;
+    }
 }
