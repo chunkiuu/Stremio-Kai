@@ -1,5 +1,5 @@
 /**
- * Episode sidebar layout compatibility fix (v2)
+ * Episode sidebar layout compatibility fix (v3)
  *
  * Some Stremio UI builds leave the episode metadata pane at its intrinsic
  * width while the thumbnail side consumes the rest of the row. The result is
@@ -9,11 +9,14 @@
  * Use an explicit two-column grid for each episode row so the thumbnail owns
  * a bounded first column and the metadata pane always owns the remaining
  * width. Also neutralize stale flex widths/margins from the native UI.
+ *
+ * v3: slightly larger episode thumbnails while keeping enough room for title,
+ * date and description text in the sidebar.
  */
 
 .video-container-ezBpK {
     display: grid !important;
-    grid-template-columns: clamp(112px, 28%, 144px) minmax(0, 1fr) !important;
+    grid-template-columns: clamp(136px, 36%, 168px) minmax(0, 1fr) !important;
     grid-auto-flow: row !important;
     column-gap: 14px !important;
     align-items: start !important;
@@ -38,7 +41,7 @@
     grid-row: 1 !important;
     width: 100% !important;
     min-width: 0 !important;
-    max-width: 144px !important;
+    max-width: 168px !important;
     margin: 0 !important;
     padding: 0 !important;
     justify-self: stretch !important;
@@ -49,9 +52,9 @@
     display: block !important;
     width: 100% !important;
     min-width: 0 !important;
-    max-width: 144px !important;
+    max-width: 168px !important;
     height: auto !important;
-    aspect-ratio: 16 / 10 !important;
+    aspect-ratio: 16 / 9 !important;
     margin: 0 !important;
     object-fit: cover !important;
     box-sizing: border-box !important;
