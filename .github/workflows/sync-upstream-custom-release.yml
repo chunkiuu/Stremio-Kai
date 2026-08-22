@@ -81,8 +81,7 @@ jobs:
           portable_url="$(jq -r '[.assets[] | select(.name | test("\\.7z$"; "i"))] | sort_by(.size) | reverse | .[0].browser_download_url // empty' <<<"$release_json")"
           portable_name="$(jq -r '[.assets[] | select(.name | test("\\.7z$"; "i"))] | sort_by(.size) | reverse | .[0].name // empty' <<<"$release_json")"
 
-          # Preserve the upstream release body exactly as Markdown. This file is
-          # reused later when creating the custom release notes.
+          # Mirror the original upstream release body exactly as Markdown.
           jq -r '.body // ""' <<<"$release_json" > "$RUNNER_TEMP/upstream-release-notes.md"
 
           if [[ -z "$upstream_tag" || -z "$portable_url" ]]; then
@@ -221,39 +220,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
           UPSTREAM_NAME: ${{ steps.upstream.outputs.name }}
-          UPSTREAM_URL: ${{ steps.upstream.outputs.url }}
           CUSTOM_TAG: ${{ steps.plan.outputs.custom_tag }}
           OUTPUT_NAME: ${{ steps.package.outputs.output_name }}
           CHECKSUM_NAME: ${{ steps.package.outputs.checksum_name }}
         run: |
           set -euo pipefail
-
-          # Start with the original allecsc/Stremio-Kai release notes verbatim.
-          cp "$RUNNER_TEMP/upstream-release-notes.md" "$RUNNER_TEMP/release-notes.md"
-
-          # Keep our fork-specific information separate and below the original
-          # upstream release text so the upstream changelog remains intact.
-          {
-            echo
-            echo
-            echo "---"
-            echo
-            echo "### Custom build information"
-            echo
-            echo "This package is based on the official upstream release and adds the custom changes from this fork."
-            echo
-            echo "- Upstream release: [\`${UPSTREAM_TAG}\`](${UPSTREAM_URL})"
-            echo "- Custom branch: \`${CUSTOM_BRANCH}\`"
-            echo "- Custom commit: \`${CUSTOM_SHA}\`"
-            echo "- Build method: official upstream portable archive + custom \`portable_config\` changes"
-            echo
-            echo "Custom files applied:"
-            if [[ -s "$RUNNER_TEMP/custom-files.txt" ]]; then
-              awk -F '\t' '{ if ($1 ~ /^R/) print "- `" $3 "` (" $1 ")"; else print "- `" $2 "` (" $1 ")" }' "$RUNNER_TEMP/custom-files.txt"
-            else
-              echo "- None"
-            fi
-          } >> "$RUNNER_TEMP/release-notes.md"
 
           release_title="${UPSTREAM_NAME} — Custom"
           if [[ -z "${UPSTREAM_NAME}" ]]; then
@@ -266,7 +237,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$CUSTOM_SHA" \
             --title "$release_title" \
-            --notes-file "$RUNNER_TEMP/release-notes.md"
+            --notes-file "$RUNNER_TEMP/upstream-release-notes.md"
 
       - name: Summary
         shell: bash
