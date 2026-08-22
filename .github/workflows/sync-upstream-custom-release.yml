@@ -1,0 +1,263 @@
+name: Sync upstream and build custom Kai
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync-upstream-custom-release.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stremio-kai-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync-and-release:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: allecsc/Stremio-Kai
+      CUSTOM_BRANCH: custom
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Configure Git and upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null || true
+          git fetch upstream main --tags --prune
+          git fetch origin main "${CUSTOM_BRANCH}" --prune
+
+      - name: Sync fork main with upstream main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout main
+          git merge --no-edit upstream/main
+          git push origin main
+
+      - name: Sync custom branch with upstream main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout "${CUSTOM_BRANCH}"
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort || true
+            echo "::error::Upstream changes conflict with the custom branch. Resolve the conflict manually, then rerun this workflow."
+            exit 1
+          fi
+          git push origin "${CUSTOM_BRANCH}"
+          echo "CUSTOM_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Detect latest upstream release
+        id: upstream
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_json="$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest")"
+
+          upstream_tag="$(jq -r '.tag_name // empty' <<<"$release_json")"
+          portable_url="$(jq -r '[.assets[] | select(.name | test("\\.7z$"; "i"))] | sort_by(.size) | reverse | .[0].browser_download_url // empty' <<<"$release_json")"
+          portable_name="$(jq -r '[.assets[] | select(.name | test("\\.7z$"; "i"))] | sort_by(.size) | reverse | .[0].name // empty' <<<"$release_json")"
+
+          if [[ -z "$upstream_tag" || -z "$portable_url" ]]; then
+            echo "::error::Could not find the latest upstream release or its portable .7z asset."
+            exit 1
+          fi
+
+          echo "tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
+          echo "portable_url=${portable_url}" >> "$GITHUB_OUTPUT"
+          echo "portable_name=${portable_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide release tag
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            custom_tag="custom-${UPSTREAM_TAG}-r${GITHUB_RUN_NUMBER}"
+            should_build="true"
+          else
+            custom_tag="custom-${UPSTREAM_TAG}"
+            if gh release view "$custom_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              should_build="false"
+            else
+              should_build="true"
+            fi
+          fi
+
+          echo "custom_tag=${custom_tag}" >> "$GITHUB_OUTPUT"
+          echo "should_build=${should_build}" >> "$GITHUB_OUTPUT"
+
+      - name: Install 7-Zip
+        if: steps.plan.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y p7zip-full
+
+      - name: Download and extract official portable build
+        if: steps.plan.outputs.should_build == 'true'
+        shell: bash
+        env:
+          PORTABLE_URL: ${{ steps.upstream.outputs.portable_url }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/upstream-kai.7z"
+          unpack="$RUNNER_TEMP/upstream-kai"
+          mkdir -p "$unpack"
+
+          curl -fL --retry 3 --retry-delay 5 "$PORTABLE_URL" -o "$archive"
+          7z x "$archive" -o"$unpack" -y >/dev/null
+
+          config_dir="$(find "$unpack" -type d -name portable_config -print -quit)"
+          if [[ -z "$config_dir" ]]; then
+            echo "::error::The upstream archive does not contain a portable_config directory."
+            exit 1
+          fi
+
+          app_root="$(dirname "$config_dir")"
+          if [[ ! -f "$app_root/stremio.exe" ]]; then
+            echo "::error::Could not find stremio.exe beside portable_config in the upstream archive."
+            exit 1
+          fi
+
+          echo "APP_ROOT=$app_root" >> "$GITHUB_ENV"
+
+      - name: Apply custom changes
+        if: steps.plan.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff --name-status --find-renames upstream/main...HEAD -- portable_config/ > "$RUNNER_TEMP/custom-files.txt"
+
+          if [[ ! -s "$RUNNER_TEMP/custom-files.txt" ]]; then
+            echo "::warning::No custom portable_config changes were found. The package will match upstream."
+          fi
+
+          while IFS=$'\t' read -r status path extra; do
+            [[ -z "${status:-}" ]] && continue
+
+            case "$status" in
+              A|M)
+                mkdir -p "$APP_ROOT/$(dirname "$path")"
+                git show "HEAD:$path" > "$APP_ROOT/$path"
+                ;;
+              D)
+                rm -f "$APP_ROOT/$path"
+                ;;
+              R*)
+                old_path="$path"
+                new_path="$extra"
+                rm -f "$APP_ROOT/$old_path"
+                mkdir -p "$APP_ROOT/$(dirname "$new_path")"
+                git show "HEAD:$new_path" > "$APP_ROOT/$new_path"
+                ;;
+              *)
+                echo "::warning::Skipping unsupported diff status '$status' for '$path'."
+                ;;
+            esac
+          done < "$RUNNER_TEMP/custom-files.txt"
+
+      - name: Package custom portable build
+        if: steps.plan.outputs.should_build == 'true'
+        id: package
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          safe_tag="${UPSTREAM_TAG//\//-}"
+          output_name="Stremio-Kai-Custom-${safe_tag}.7z"
+          output_path="$GITHUB_WORKSPACE/$output_name"
+
+          pushd "$APP_ROOT" >/dev/null
+          7z a -t7z -mx=7 "$output_path" . >/dev/null
+          popd >/dev/null
+
+          sha256sum "$output_name" > "${output_name}.sha256"
+
+          echo "output_name=${output_name}" >> "$GITHUB_OUTPUT"
+          echo "checksum_name=${output_name}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Create custom GitHub release
+        if: steps.plan.outputs.should_build == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          CUSTOM_TAG: ${{ steps.plan.outputs.custom_tag }}
+          OUTPUT_NAME: ${{ steps.package.outputs.output_name }}
+          CHECKSUM_NAME: ${{ steps.package.outputs.checksum_name }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "Automatically built custom Stremio Kai package."
+            echo
+            echo "- Upstream: \`${UPSTREAM_REPO}@${UPSTREAM_TAG}\`"
+            echo "- Custom branch: \`${CUSTOM_BRANCH}\`"
+            echo "- Custom commit: \`${CUSTOM_SHA}\`"
+            echo "- Build method: official upstream portable archive + custom \`portable_config\` changes"
+            echo
+            echo "Custom files applied:"
+            if [[ -s "$RUNNER_TEMP/custom-files.txt" ]]; then
+              awk -F '\t' '{ if ($1 ~ /^R/) print "- `" $3 "` (" $1 ")"; else print "- `" $2 "` (" $1 ")" }' "$RUNNER_TEMP/custom-files.txt"
+            else
+              echo "- None"
+            fi
+          } > "$RUNNER_TEMP/release-notes.md"
+
+          gh release create "$CUSTOM_TAG" \
+            "$OUTPUT_NAME" \
+            "$CHECKSUM_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$CUSTOM_SHA" \
+            --title "Stremio Kai Custom — ${UPSTREAM_TAG}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Summary
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          CUSTOM_TAG: ${{ steps.plan.outputs.custom_tag }}
+          SHOULD_BUILD: ${{ steps.plan.outputs.should_build }}
+        run: |
+          {
+            echo "### Stremio Kai custom sync"
+            echo
+            echo "- Upstream main: synced"
+            echo "- Custom branch: synced"
+            echo "- Latest upstream release: \`${UPSTREAM_TAG}\`"
+            if [[ "$SHOULD_BUILD" == "true" ]]; then
+              echo "- Custom release created: \`${CUSTOM_TAG}\`"
+            else
+              echo "- Custom release already exists: \`${CUSTOM_TAG}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
